@@ -2,13 +2,13 @@
 
 **Date:** 2026-04-06
 **Status:** Draft — pending user review
-**Author:** Claude (autonomous research session)
+**Author:** Paulo Victor Silva
 
 ---
 
 ## 1. Executive Summary
 
-A portfolio project that extracts World of Warcraft combat data from the Warcraft Logs GraphQL API, models it as a Data Vault 2.0 in PostgreSQL using dbt, orchestrates pipelines with Apache Airflow, and serves an interactive visualization portal built with Next.js 15 / React 19. The standout feature is a real-time pipeline monitoring dashboard with animated DAG visualizations.
+Extracts World of Warcraft combat data from the Warcraft Logs GraphQL API, models it as a Data Vault 2.0 in PostgreSQL using dbt, orchestrates pipelines with Apache Airflow, and serves an interactive visualization portal built with Next.js 15 / React 19. The standout feature is a real-time pipeline monitoring dashboard with animated DAG visualizations.
 
 ### Key Viability Finding
 
@@ -52,10 +52,12 @@ A portfolio project that extracts World of Warcraft combat data from the Warcraf
 
 The WCL API uses a points-per-hour budget, not simple request counting. Complex queries cost more points. Caching is essential.
 
-**Layer 1 — Local response cache (SQLite or filesystem):**
-- Cache raw GraphQL responses keyed by query hash + variables hash
+**Layer 1 — Local filesystem cache (Parquet):**
+- Cache raw GraphQL responses as Parquet files on the local filesystem, keyed by query hash + variables hash
 - TTL-based expiry: static data (zones, encounters, classes) cached for 7 days; reports/rankings cached for 24 hours
 - Eliminates redundant API calls during development and re-runs
+- Parquet format enables direct querying with DuckDB during development and doubles as the export format for mart tables
+- Mart Parquet exports are uploaded to **Vercel Blob Storage** (free tier: 5 GB, 100 GB transfer/month) for DuckDB-WASM browser queries
 
 **Layer 2 — Incremental ingestion state:**
 - Track `last_fetched_timestamp` per guild/zone in a state table (PostgreSQL)
@@ -88,83 +90,23 @@ Mythic+ can be added as a second phase. PvP data is limited on Warcraft Logs.
 
 ---
 
-## 3. The automate_dv Problem
+## 3. automate_dv on PostgreSQL
 
-### The Constraint
+### Decision: Use automate_dv directly
 
-automate_dv (formerly dbtvault) officially supports only:
-- Snowflake
-- Google BigQuery
-- Microsoft SQL Server
+automate_dv v0.11.5+ natively supports PostgreSQL via dbt's `adapter.dispatch()` pattern. All core vault macros (hub, link, sat, eff_sat, ma_sat, pit, bridge, t_link, xts, ref_table) have `postgres__` dispatch targets.
 
-**PostgreSQL and DuckDB are NOT supported.** The macros use platform-specific SQL (hash functions, MERGE statements, date handling) that won't compile against dbt-postgres or dbt-duckdb.
+**PostgreSQL-specific adaptations handled by automate_dv:**
+- `QUALIFY ROW_NUMBER()` → `DISTINCT ON (...)` for row deduplication
+- Binary hash encoding via `ENCODE()`/`DECODE()`
+- No MERGE — uses CTE + LEFT JOIN anti-join insert-only pattern (Postgres-compatible)
+- Timestamp handling adapted for Postgres types
+
+**Setup:** Add to `packages.yml` and configure `vars` in `dbt_project.yml` (hash algorithm, null placeholder, max datetime).
 
 Sources:
 - [automate_dv GitHub](https://github.com/Datavault-UK/automate-dv)
 - [automate_dv website](https://automate-dv.com/what-is-automate-dv/)
-
-### Impact
-
-This means we cannot use automate_dv out of the box with a cheap database. We need an alternative approach.
-
----
-
-## 4. Proposed Approaches
-
-### Approach A: Custom dbt Data Vault Macros on PostgreSQL (RECOMMENDED)
-
-Write our own lightweight dbt macros for Data Vault 2.0 on PostgreSQL, inspired by automate_dv's patterns but targeting Postgres-native SQL.
-
-**What we build:**
-- `hub()` macro — generates hub tables with `md5()` hash keys
-- `link()` macro — generates link tables
-- `sat()` macro — generates satellites with hashdiff
-- `stage()` macro — handles hashing and derived columns
-- PostgreSQL-native: uses `md5()`, `INSERT ... ON CONFLICT` (not MERGE), `CURRENT_TIMESTAMP`
-
-**Pros:**
-- Full control, no compatibility issues
-- Demonstrates deep understanding of Data Vault 2.0 (more impressive for portfolio than just using a package)
-- PostgreSQL is free (Neon free tier)
-- Shows macro-writing skills in dbt
-
-**Cons:**
-- More upfront work (estimated 5-7 days for core macros including tests)
-- No community support — we maintain it ourselves
-- Subtle edge cases: Postgres `md5()` returns hex string (not binary), satellite deduplication needs careful `INSERT ... WHERE NOT EXISTS` patterns instead of MERGE, null handling in composite hashes requires explicit `COALESCE`
-
-**Database:** PostgreSQL on Neon free tier (0.5 GB storage, 100 CU-hours/month, auto-suspend)
-
-### Approach B: Fork automate_dv + Add PostgreSQL Support
-
-Fork the official automate_dv repo and add a `postgres` dispatch target for all macros.
-
-**Pros:**
-- Leverages existing tested logic
-- Could contribute back to open source (impressive for portfolio)
-- Uses the "real" automate_dv package name
-
-**Cons:**
-- Significant effort to port all macros (hash functions, merge logic, date handling)
-- Must keep in sync with upstream updates
-- Debugging someone else's macro architecture
-
-### Approach C: Use Snowflake Free Trial
-
-Use Snowflake's 30-day free trial with $400 in credits. automate_dv works natively.
-
-**Pros:**
-- Zero compatibility issues with automate_dv
-- Industry-standard warehouse
-
-**Cons:**
-- Trial expires — not viable for a permanent portfolio piece
-- Snowflake costs ~$2-4/credit after trial
-- Defeats the "cheap" requirement
-
-### Recommendation: Approach A
-
-Custom dbt macros on PostgreSQL. It's the most sustainable, cheapest ($0), and actually more impressive for a portfolio since it demonstrates you understand Data Vault internals rather than just calling a package.
 
 ---
 
@@ -183,20 +125,18 @@ Custom dbt macros on PostgreSQL. It's the most sustainable, cheapest ($0), and a
 
 Sources: [Neon pricing](https://neon.com/pricing), [Neon plans](https://neon.com/docs/introduction/plans)
 
-### Optional: DuckDB-WASM for Frontend Analytics
+### Optional: DuckDB-WASM for Ad-Hoc Exploration
 
-As a portfolio differentiator, export mart tables as Parquet files and serve them via DuckDB-WASM in the browser. This means:
-- Zero backend compute for analytical queries
-- Queries run on the visitor's machine
-- No cold-start latency
-- Genuinely impressive for recruiters
+Export mart tables as Parquet files to Vercel Blob Storage and expose a DuckDB-WASM "explore" page where users can run ad-hoc SQL queries in the browser. This offloads analytical queries from the backend.
+
+**Trade-off:** DuckDB-WASM queries return raw SQL results — no TypeScript type safety, no server-side validation, no Drizzle ORM integration. This makes it unsuitable as the primary data path. The main frontend should use PostgreSQL via Next.js Server Actions + Drizzle ORM for full TypeScript control.
 
 **Architecture:**
 ```
-dbt (PostgreSQL) → export marts as Parquet → host on GitHub Pages/R2 → DuckDB-WASM queries in browser
+dbt (PostgreSQL) → export marts as Parquet → upload to Vercel Blob Storage → DuckDB-WASM on "explore" page
 ```
 
-This is a Phase 2 enhancement. Phase 1 uses PostgreSQL directly via Next.js Server Actions.
+This is a stretch goal. The primary read path is PostgreSQL + Drizzle ORM + Next.js Server Actions.
 
 ---
 
@@ -245,13 +185,7 @@ This is a Phase 2 enhancement. Phase 1 uses PostgreSQL directly via Next.js Serv
 dbt_project/
 ├── dbt_project.yml
 ├── packages.yml
-├── macros/
-│   └── data_vault/           # Our custom DV macros
-│       ├── hub.sql
-│       ├── link.sql
-│       ├── satellite.sql
-│       ├── stage.sql
-│       └── hash.sql
+├── macros/                       # Project-specific macros only (automate_dv handles vault patterns)
 ├── models/
 │   ├── staging/
 │   │   ├── sources.yml
@@ -283,7 +217,7 @@ dbt_project/
 
 ### Strategy: Astro CLI (local, free) + Optional VPS for Live Demo
 
-Astronomer has **no free tier** (starts at $0.35/hr after 14-day trial). For a portfolio project:
+Astronomer has **no free tier** (starts at $0.35/hr after 14-day trial). Strategy:
 
 - **Development:** Astro CLI (`astro dev start`) runs Airflow locally via Docker for $0
 - **Live demo (optional):** Self-host on a $4-6/mo VPS (Hetzner/DigitalOcean) with Docker Compose + LocalExecutor
@@ -365,7 +299,7 @@ Using TanStack Table + shadcn/ui DataTable:
 | Builds | 6,000 minutes/month |
 | Preview deployments | Unlimited |
 
-Sufficient for a portfolio project.
+Sufficient for this project's scale.
 
 ---
 
@@ -373,7 +307,7 @@ Sufficient for a portfolio project.
 
 ### Architecture (Revised after adversarial review)
 
-**Primary mode: Demo/Replay** — pre-recorded pipeline runs replayed with animations. This is what portfolio visitors see. No backend infrastructure required.
+**Primary mode: Demo/Replay** — pre-recorded pipeline runs replayed with animations. No backend infrastructure required.
 
 **Optional live mode (Phase 2, requires VPS):** Only when the developer is running the pipeline locally or on a VPS with Airflow exposed.
 
@@ -432,13 +366,13 @@ The frontend plays this back with `requestAnimationFrame`, creating the full ani
 
 ### Auth.js v5 with Credentials Provider
 
-**Note from adversarial review:** The challenge agent argued auth adds complexity for zero portfolio value since the data is public WoW logs. However, the user explicitly requested "login and password" — so we keep it, but keep it minimal.
+Kept minimal — the data is public WoW logs, so auth is lightweight.
 
 - Email/password login via Auth.js v5 Credentials provider
 - JWT sessions (stateless, works well with Vercel serverless)
 - Next.js middleware for route protection
 - Password hashing with bcrypt
-- Pre-seeded demo account (`demo@example.com` / `demo123`) so portfolio visitors can log in instantly
+- Pre-seeded demo account (`demo@example.com` / `demo123`) for quick access
 - Simple role: `viewer` (all visitors get the same access)
 - User table stored in PostgreSQL via Drizzle ORM
 
@@ -465,7 +399,7 @@ The frontend plays this back with `requestAnimationFrame`, creating the full ani
 | Schema tests | `unique`, `not_null` on all hub PKs and satellite hashdiffs |
 | Relationship tests | `relationships` between links and hubs |
 | Custom tests | Hub load integrity, satellite deduplication, hashdiff correctness |
-| Macro integration tests | Seed data → run macros → assert expected output (tests the MACROS, not just the data) |
+| Integration tests | Seed data → run automate_dv models → assert expected vault output |
 | SQL linting | `sqlfluff lint` on generated SQL from `dbt compile` |
 | DAG validation | `dag_bag.import_errors` check, task dependency validation |
 | Source freshness | `dbt source freshness` for raw tables |
@@ -640,6 +574,7 @@ wow-datavault-dashboard/
 | Airflow (Astro CLI local) | Free |
 | Airflow (VPS for live demo) | $4-6/month (optional) |
 | Frontend (Vercel Hobby) | Free |
+| Vercel Blob Storage | Free (5 GB storage, 100 GB transfer) |
 | Pipeline relay (Phase 2, Railway) | Free tier ($5 credit) |
 | GitHub Actions | Free (2,000 min/month) |
 | Domain name | ~$10/year (optional) |
@@ -685,7 +620,7 @@ wow-datavault-dashboard/
 | Neon 0.5 GB storage fills up | Can't ingest more data | Scope to top guilds/encounters; prune old raw data |
 | Neon cold starts (1-3s) | Slow first page load | Implement loading states; consider DuckDB-WASM for read path |
 | WCL API rate limits | Slow ingestion | Smart caching, incremental loads, off-peak scheduling |
-| Custom DV macros have bugs | Incorrect data model | Comprehensive dbt tests on every hub/link/satellite |
+| automate_dv edge cases on Postgres | Incorrect data model | Comprehensive dbt tests on every hub/link/satellite |
 | Airflow not accessible online | Can't show live pipelines | Demo/replay mode as primary showcase |
 | Vercel function timeout (60s) | Complex queries fail | Optimize SQL, add indexes, paginate results |
 
@@ -693,21 +628,21 @@ wow-datavault-dashboard/
 
 ## 17. Phases (Revised — Realistic Timeline)
 
-**Adversarial review estimated 10-13 weeks for the full spec. The plan below targets a polished MVP in 6-8 weeks by cutting scope strategically. A polished 70% is better than a buggy 100%.**
+**The plan below targets a working MVP in 6-8 weeks by cutting scope strategically.**
 
 ### Phase 1: Foundation + README (Week 1-2)
-- README with architecture diagram (the most important portfolio artifact — do this FIRST)
+- README with architecture diagram
 - Project scaffolding (Next.js, dbt, Python)
 - PostgreSQL setup on Neon (dev branch)
 - WCL API client + OAuth token management
 - Basic ingestion scripts (reports, fights, players, rankings)
-- Custom dbt Data Vault macros with integration tests (hub, link, satellite, stage, hash)
+- automate_dv package setup and configuration for PostgreSQL
 
 ### Phase 2: Data Model (Week 3-4)
 - Full staging models
 - Raw vault (all hubs, links, satellites)
 - Mart models (player_rankings, encounter_statistics, class_performance)
-- Comprehensive dbt tests (schema + macro integration tests with seed data)
+- Comprehensive dbt tests (schema + integration tests with seed data)
 - Seed data for demo environment
 
 ### Phase 3: Frontend + Auth (Week 4-5)
@@ -738,17 +673,17 @@ wow-datavault-dashboard/
 
 ---
 
-## 18. Adversarial Review Summary
+## 18. Review Summary
 
-This spec was challenged by an adversarial agent. Key changes made:
+Key changes from design review:
 1. **Killed the live WebSocket relay as primary mode** — demo/replay is now the default
 2. **Fixed data model:** difficulty in encounter business key, removed degenerate links, added link_player_report, moved spec to link_player_encounter
 3. **Revised macro estimate** from 2-3 days to 5-7 days
 4. **Added deployment story** (Section 15) — where each component runs, secrets management, DB initialization
-5. **Added macro integration tests** and DAG validation tests
+5. **Added integration tests** and DAG validation tests
 6. **Fixed profiles.yml** — gitignored, uses env vars
 7. **Revised timeline** to 6-8 weeks with realistic estimates and strategic scope cuts
-8. **Added README as Phase 1** priority — it's the most important portfolio artifact
+8. **Added README as Phase 1** priority
 9. **Flagged 0.5 GB Neon storage** as tight — scope to 1-2 guilds, exclude Events entity
 
 ---
@@ -757,7 +692,7 @@ This spec was challenged by an adversarial agent. Key changes made:
 
 1. **Raid logs are the primary focus** — not Mythic+ or PvP (can add later)
 2. **"React 19 for backend" means Next.js 15 App Router** with Server Components/Actions
-3. **Custom dbt macros over forking automate_dv** — more practical and impressive
+3. **Using automate_dv directly** — native Postgres support confirmed in v0.11.5
 4. **PostgreSQL over DuckDB** for the primary database — automate_dv-like patterns work natively
 5. **Auth.js v5 over Clerk** — keeps it free, demonstrates auth skills
 6. **Demo/replay mode** for pipeline monitoring — visitors don't need live infra
