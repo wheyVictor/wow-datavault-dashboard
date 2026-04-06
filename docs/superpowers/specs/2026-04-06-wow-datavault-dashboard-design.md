@@ -170,18 +170,23 @@ Custom dbt macros on PostgreSQL. It's the most sustainable, cheapest ($0), and a
 
 ## 5. Database Architecture
 
-### Decision: PostgreSQL on Neon
+### Decision: Vercel Postgres (powered by Neon) — All Free Tier
+
+Vercel integrates Neon as its Postgres solution. Using Vercel Postgres keeps the entire stack (frontend + database) under one platform on the free Hobby plan.
 
 | Aspect | Detail |
 |--------|--------|
-| Provider | Neon (free tier) |
-| Storage | 0.5 GB (tight — scope to 1-2 guilds, exclude raw Events entity. Budget $19/mo for Neon Launch if needed) |
-| Compute | 100 CU-hours/month, auto-suspend after 5 min |
-| Branching | Supported (great for dbt dev branches) |
-| Connection | Serverless driver for Next.js edge functions |
+| Provider | Vercel Postgres (Neon-backed) — free Hobby tier |
+| Storage | 256 MB on Vercel Hobby (scope to 1-2 guilds, exclude raw Events entity) |
+| Compute | 60 compute hours/month on Hobby |
+| Branching | Supported via Neon (great for dbt dev branches) |
+| Connection | `@vercel/postgres` SDK — native serverless driver, zero config with Next.js |
 | Cold start | ~1-3s on first query after suspend |
+| Upgrade path | If 256 MB is too tight, switch to Neon free tier directly (0.5 GB) or Neon Launch ($19/mo) |
 
-Sources: [Neon pricing](https://neon.com/pricing), [Neon plans](https://neon.com/docs/introduction/plans)
+**Why Vercel Postgres over standalone Neon:** Single platform for frontend + database, seamless env var injection, native SDK integration with Next.js Server Actions. All free tier.
+
+Sources: [Vercel Pricing](https://vercel.com/pricing), [Vercel Hobby Plan](https://vercel.com/docs/plans/hobby), [Neon on Vercel](https://devradar.dev/guides/neon-database-on-vercel-free-tier-explained-cost-clarification)
 
 ### Optional: DuckDB-WASM for Frontend Analytics
 
@@ -636,7 +641,7 @@ wow-datavault-dashboard/
 | Component | Cost |
 |-----------|------|
 | Warcraft Logs API | Free |
-| PostgreSQL (Neon) | Free (0.5 GB, 100 CU-hours) |
+| PostgreSQL (Vercel Postgres / Neon) | Free (256 MB, 60 compute hours — Hobby tier) |
 | Airflow (Astro CLI local) | Free |
 | Airflow (VPS for live demo) | $4-6/month (optional) |
 | Frontend (Vercel Hobby) | Free |
