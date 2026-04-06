@@ -35,5 +35,6 @@ airflow/logs/
 # Superpowers brainstorm
 .superpowers/
 
-# Claude local settings
+# Claude
 .claude/settings.local.json
+CLAUDE.md
