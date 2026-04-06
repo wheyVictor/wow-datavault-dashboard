@@ -32,9 +32,7 @@ dbt_project/profiles.yml
 # Airflow
 airflow/logs/
 
-# Superpowers brainstorm
+# Claude & Superpowers
+.claude/
 .superpowers/
-
-# Claude
-.claude/settings.local.json
 CLAUDE.md
