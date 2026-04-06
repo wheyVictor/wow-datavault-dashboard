@@ -44,8 +44,34 @@ A portfolio project that extracts World of Warcraft combat data from the Warcraf
 
 - **Python scripts** using `requests` or `gql` (Python GraphQL client) with OAuth token management
 - **Incremental ingestion:** Track last-fetched report codes/timestamps, only pull new data
-- **Rate limit handling:** Queue requests, respect points budget, cache responses
+- **Rate limit handling:** Queue requests, respect points budget, monitor via `rateLimitData` query
 - **Pagination:** Use `nextPageTimestamp` for event data pagination
+- **Orchestration:** Airflow DAGs schedule and coordinate ingestion + transformation
+
+### Caching Strategy (Critical — ~3,600 points/hour limit)
+
+The WCL API uses a points-per-hour budget, not simple request counting. Complex queries cost more points. Caching is essential.
+
+**Layer 1 — Local response cache (SQLite or filesystem):**
+- Cache raw GraphQL responses keyed by query hash + variables hash
+- TTL-based expiry: static data (zones, encounters, classes) cached for 7 days; reports/rankings cached for 24 hours
+- Eliminates redundant API calls during development and re-runs
+
+**Layer 2 — Incremental ingestion state:**
+- Track `last_fetched_timestamp` per guild/zone in a state table (PostgreSQL)
+- Only request reports newer than the last successful fetch
+- Store report codes already processed to avoid re-fetching
+
+**Layer 3 — Request budgeting:**
+- Before each API call, check remaining points via `rateLimitData` query (append to any request at zero extra cost)
+- If budget < 10% remaining, pause and wait for reset
+- Log points consumed per query type to optimize expensive queries
+- Prioritize: rankings (cheap, high value) over fight details (expensive, lower priority)
+
+**Layer 4 — Batch optimization:**
+- Combine multiple small queries into fewer large queries where the schema allows
+- Use GraphQL query batching to reduce HTTP overhead
+- Fetch character rankings in bulk per encounter rather than per-character
 
 ### Scope Decision (Assumed)
 
