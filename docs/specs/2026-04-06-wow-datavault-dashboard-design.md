@@ -10,10 +10,6 @@
 
 Extracts World of Warcraft combat data from the Warcraft Logs GraphQL API, models it as a Data Vault 2.0 in PostgreSQL using dbt, orchestrates pipelines with Apache Airflow, and serves an interactive visualization portal built with Next.js 15 / React 19. The standout feature is a real-time pipeline monitoring dashboard with animated DAG visualizations.
 
-### Key Viability Finding
-
-**automate_dv does NOT support PostgreSQL or DuckDB.** It only supports Snowflake, BigQuery, and SQL Server. This is the single biggest constraint. We have two viable paths forward (see Section 4).
-
 ---
 
 ## 2. Data Source: Warcraft Logs API
